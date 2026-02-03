@@ -1,0 +1,23 @@
+# Build Artifacts
+bin/
+*.exe
+*.obj
+*.res
+*.lib
+*.exp
+*.pdb
+
+# User Settings
+settings.dat
+
+# Temporary Files
+*.log
+*.tmp
+*.bak
+
+# VS Code
+.vscode/
+
+# Python Cache
+__pycache__/
+*.pyc
