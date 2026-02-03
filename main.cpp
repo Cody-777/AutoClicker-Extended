@@ -15,6 +15,40 @@ HBRUSH g_hbrTheme = NULL;
 COLORREF g_textColor = RGB(0, 0, 0);
 COLORREF g_bkColor = GetSysColor(COLOR_3DFACE);
 
+// Helper to format hotkey string
+std::wstring GetHotkeyString(int vk, int mod) {
+  if (vk == 0)
+    return L"None";
+
+  std::wstring s = L"";
+  if (mod & HOTKEYF_CONTROL)
+    s += L"Ctrl + ";
+  if (mod & HOTKEYF_SHIFT)
+    s += L"Shift + ";
+  if (mod & HOTKEYF_ALT)
+    s += L"Alt + ";
+
+  UINT scanCode = MapVirtualKey(vk, MAPVK_VK_TO_VSC);
+  wchar_t buffer[32];
+  if (GetKeyNameTextW(scanCode << 16, buffer, 32)) {
+    s += buffer;
+  } else {
+    s += L"Key";
+  }
+  return s;
+}
+
+UINT GetWinModFromCommCtrl(int mod) {
+  UINT fsModifiers = 0;
+  if (mod & HOTKEYF_SHIFT)
+    fsModifiers |= MOD_SHIFT;
+  if (mod & HOTKEYF_CONTROL)
+    fsModifiers |= MOD_CONTROL;
+  if (mod & HOTKEYF_ALT)
+    fsModifiers |= MOD_ALT;
+  return fsModifiers;
+}
+
 const int HK_START_STOP = 1;
 const char *SETTINGS_FILE = "settings.dat";
 
@@ -45,8 +79,15 @@ ClickSettings LoadSettings() {
 
 void UpdateUIState() {
   bool running = g_clicker.IsRunning();
-  SetDlgItemText(g_hDlg, IDC_BTN_STARTSTOP,
-                 running ? L"Stop (F6)" : L"Start (F6)");
+  SetDlgItemText(g_hDlg, IDC_BTN_STARTSTOP, running ? L"Stop" : L"Start");
+
+  // Update button text with hotkey
+  ClickSettings s = LoadSettings();
+  std::wstring btnText = running ? L"Stop (" : L"Start (";
+  btnText += GetHotkeyString(s.hotkeyVk, s.hotkeyMod);
+  btnText += L")";
+  SetDlgItemText(g_hDlg, IDC_BTN_STARTSTOP, btnText.c_str());
+
   SetDlgItemText(g_hDlg, IDC_STAT_STATUS,
                  running ? L"Status: Running" : L"Status: Stopped");
 
@@ -170,22 +211,26 @@ void UpdateTheme(int themeIndex) {
 INT_PTR CALLBACK DialogProc(HWND hDlg, UINT uMsg, WPARAM wParam,
                             LPARAM lParam) {
   switch (uMsg) {
-  case WM_INITDIALOG:
+  case WM_INITDIALOG: {
     g_hDlg = hDlg;
     // Load settings and apply to UI
-    {
-      ClickSettings s = LoadSettings();
-      SetUIFromSettings(s);
-      UpdateTheme(s.themeIndex);
-    }
+    ClickSettings s = LoadSettings();
+    SetUIFromSettings(s);
+    UpdateTheme(s.themeIndex);
 
-    // Register Hotkey F6
-    RegisterHotKey(hDlg, HK_START_STOP, 0, VK_F6);
+    // Init Hotkey Control
+    SendDlgItemMessage(hDlg, IDC_HOTKEY_FIELD, HKM_SETHOTKEY,
+                       MAKEWORD(s.hotkeyVk, s.hotkeyMod), 0);
+
+    // Register Hotkey
+    RegisterHotKey(hDlg, HK_START_STOP, GetWinModFromCommCtrl(s.hotkeyMod),
+                   s.hotkeyVk);
 
     // Timer for updating click count
     SetTimer(hDlg, 1, 100, NULL);
     UpdateUIState();
     return TRUE;
+  }
 
   case WM_COMMAND:
     switch (LOWORD(wParam)) {
@@ -213,6 +258,58 @@ INT_PTR CALLBACK DialogProc(HWND hDlg, UINT uMsg, WPARAM wParam,
     case IDC_RADIO_FIXED:
       UpdateUIState();
       break;
+
+    case IDC_BTN_SETHOTKEY: {
+      // Get key from control
+      LRESULT hk =
+          SendDlgItemMessage(hDlg, IDC_HOTKEY_FIELD, HKM_GETHOTKEY, 0, 0);
+      int vk = LOBYTE(LOWORD(hk));
+      int mod = HIBYTE(LOWORD(hk)); // This returns HOTKEYF_* flags
+
+      // Validating mod flags for RegisterHotKey
+      // HKM_GETHOTKEY returns HOTKEYF_SHIFT (0x01), HOTKEYF_CONTROL (0x02),
+      // HOTKEYF_ALT (0x04) RegisterHotKey expects MOD_SHIFT (0x04), MOD_CONTROL
+      // (0x02), MOD_ALT (0x01) Wait, Windows API is confusing here. CommCtrl.h:
+      // HOTKEYF_SHIFT   0x01
+      // HOTKEYF_CONTROL 0x02
+      // HOTKEYF_ALT     0x04
+      //
+      // WinUser.h:
+      // MOD_ALT      0x0001
+      // MOD_CONTROL  0x0002
+      // MOD_SHIFT    0x0004
+      //
+      // So they are SWAPPED. We need to convert.
+
+      UINT fsModifiers = GetWinModFromCommCtrl(mod);
+
+      // Update Settings
+      ClickSettings s = LoadSettings(); // Load to preserve other settings
+
+      // Store the COMMCTRL modifiers for display/control, but we might need
+      // logic for RegisterHotKey Let's store what we get from HKM_GETHOTKEY,
+      // and convert when registering. ACTUALLY, checking AutoClicker.h, I just
+      // added `hotkeyVk` and `hotkeyMod`. Let's decide `hotkeyMod` stores the
+      // COMMCTRL flags (for easy set back to control).
+
+      s.hotkeyVk = vk;
+      s.hotkeyMod = mod;
+      SaveSettings(s);
+
+      // Re-register
+      UnregisterHotKey(hDlg, HK_START_STOP);
+      if (!RegisterHotKey(hDlg, HK_START_STOP, fsModifiers, vk)) {
+        MessageBox(hDlg, L"Failed to register hotkey!", L"Error",
+                   MB_OK | MB_ICONERROR);
+      }
+
+      UpdateUIState();
+
+      // Update label
+      std::wstring label =
+          L"Hotkeys: " + GetHotkeyString(vk, mod) + L" to Start/Stop";
+      SetDlgItemText(hDlg, IDC_STAT_HOTKEY, label.c_str());
+    } break;
 
     case IDCANCEL:
       EndDialog(hDlg, 0);

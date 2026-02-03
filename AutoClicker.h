@@ -13,6 +13,8 @@ struct ClickSettings {
   int x = 0;
   int y = 0;
   int themeIndex = 0;
+  int hotkeyVk = VK_F6;
+  int hotkeyMod = 0;
 };
 
 class AutoClicker {
